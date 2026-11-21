@@ -1,1 +1,17 @@
-{"name":"wizard-arcana","version":"2.0.0","private":true,"type":"module","engines":{"node":">=20"},"scripts":{"start":"node server.js","test":"node --test tests/*.test.js"},"dependencies":{"express":"^4.21.2","socket.io":"^4.8.1"}}
+{
+  "name": "wizard-arcana",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check engine.js && node --check server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {"socket.io-client": "^4.8.1"}
+}

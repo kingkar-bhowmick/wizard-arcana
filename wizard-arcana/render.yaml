@@ -3,6 +3,7 @@ services:
     name: wizard-arcana
     runtime: node
     plan: free
+    rootDir: wizard-arcana
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
