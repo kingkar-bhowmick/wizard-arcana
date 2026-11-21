@@ -1,0 +1,10 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {deck,makeGame,makePlayer,startRound,bid,play,finishTrick,requiredSuit,legalCard,trickWinner} from '../engine.js';
+const C=(s,v=1)=>({s,v,id:`${s}-${v}`});
+test('60 unique cards',()=>{const d=deck();assert.equal(d.length,60);assert.equal(new Set(d.map(c=>c.id)).size,60)});
+test('first wizard wins, including against later wizard',()=>assert.equal(trickWinner([{index:1,card:C('wizard')},{index:2,card:C('wizard')}],'red'),1));
+test('jester lead establishes first numeric suit',()=>assert.equal(requiredSuit([{card:C('jester')},{card:C('blue',7)}]),'blue'));
+test('wizard lead means no suit obligation',()=>assert.equal(requiredSuit([{card:C('wizard')},{card:C('red',4)}]),null));
+test('follow suit enforced, specials always legal',()=>{const hand=[C('blue',2),C('red',7),C('wizard')],table=[{card:C('blue',10)}];assert.equal(legalCard(hand,table,hand[1]),false);assert.equal(legalCard(hand,table,hand[2]),true)});
+test('scoring exact bid and penalties',()=>{const g=makeGame('TEST','A','a');g.players.push(makePlayer('B','b'),makePlayer('C','c'));startRound(g);g.phase='trickEnd';g.players.forEach((p,i)=>{p.hand=[];p.bid=i===0?1:0;p.wins=i===0?1:0});finishTrick(g);assert.deepEqual(g.players.map(p=>p.score),[30,20,20]);assert.equal(g.phase,'roundEnd')});
+test('last round is no trump',()=>{const g=makeGame('TEST','A','a');g.players.push(makePlayer('B','b'),makePlayer('C','c'));g.round=19;startRound(g);assert.equal(g.trump,null);assert.equal(g.reveal,null)});
+test('bids advance turn',()=>{const g=makeGame('TEST','A','a');g.players.push(makePlayer('B','b'),makePlayer('C','c'));startRound(g);if(g.phase==='chooseTrump'){g.trump='red';g.phase='bid';g.turn=1}bid(g,1,0);bid(g,2,0);bid(g,0,1);assert.equal(g.phase,'play');assert.equal(g.turn,1)});
