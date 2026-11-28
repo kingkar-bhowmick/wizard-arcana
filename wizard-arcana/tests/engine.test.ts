@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as E from '../src/shared/engine';
+import { botAction } from '../src/shared/bot';
 const W = 52, J = 56, B = (v: number) => v - 1, G = (v: number) => 13 + v - 1, R = (v: number) => 26 + v - 1;
 const play = (p: number, c: number) => ({ p, c });
 
@@ -82,4 +83,24 @@ describe('full games', () => {
     s.history.forEach((h) => expect(h.won.reduce((a, b) => a + b, 0)).toBe(h.round));
     expect(s.scores).toEqual(s.scores.map((_, i) => s.history.reduce((a, h) => a + h.pts[i], 0)));
   });
+});
+
+describe('Quick format', () => {
+  for (const players of [3, 4, 5, 6]) {
+    it(`finishes in six rounds with ${players} bots and plus/minus bidding`, () => {
+      const game = E.newGame(players, { format: 'quick', plusMinus: true }, () => 0);
+      let moves = 0;
+      while (game.phase !== 'done' && moves++ < 200) {
+        const move = botAction(E.view(game, game.turn));
+        expect(move).not.toBeNull();
+        expect(E.act(game, game.turn, move!.type, move!.value, () => 0)).toBeNull();
+      }
+      expect(game.phase).toBe('done');
+      expect(game.rounds).toBe(6);
+      expect(game.lastTrick?.round).toBe(6);
+      expect(game.trumpCard).not.toBeNull();
+      expect(game.history.map(({ round }) => round)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(game.history.every(({ round, bids }) => bids.reduce((a, b) => a + b, 0) !== round)).toBe(true);
+    });
+  }
 });

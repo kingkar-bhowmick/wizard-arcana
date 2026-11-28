@@ -44,18 +44,28 @@ function push(r: Room) {
 io.on('connection', (sock: Socket) => {
   let hits = 0; const iv = setInterval(() => (hits = 0), 10000);
   const guard = (f: (...a: any[]) => void) => (...a: any[]) => { if (++hits > 60) return; try { f(...a); } catch (e) { console.error(e); } };
+  const activeRoom = () => {
+    const room = rooms.get(sock.data.code);
+    return room?.seats[sock.data.seat]?.sid === sock.id ? room : undefined;
+  };
   const bind = (r: Room, i: number) => {
-    const old = r.seats[i].sid; if (old && old !== sock.id) io.to(old).emit('replaced');
+    const old = r.seats[i].sid;
+    if (old && old !== sock.id) {
+      const previous = io.sockets.sockets.get(old);
+      if (previous) { previous.data = {}; previous.emit('replaced'); }
+    }
     r.seats[i].sid = sock.id; r.seats[i].connected = true; sock.data = { code: r.code, seat: i }; push(r);
   };
   sock.on('create', guard((d, ack) => {
+    if (activeRoom()) return ack?.({ error: 'You are already seated in a room.' });
     const r: Room = { code: newCode(), seats: [], host: 0, started: false, opts: { plusMinus: false }, state: null };
     const token = crypto.randomBytes(24).toString('hex');
     r.seats.push({ name: clean(d?.name), avatar: d?.avatar | 0, token, connected: true });
     rooms.set(r.code, r); ack?.({ code: r.code, token }); bind(r, 0);
   }));
   sock.on('join', guard((d, ack) => {
-    const r = rooms.get(String(d?.code || '').toUpperCase());
+    if (activeRoom()) return ack?.({ error: 'You are already seated in a room.' });
+    const r = rooms.get(String(d?.code || '').trim().toUpperCase());
     if (!r) return ack?.({ error: 'Room not found.' });
     if (r.started) return ack?.({ error: 'Game already started.' });
     if (r.seats.length >= 6) return ack?.({ error: 'Room is full.' });
@@ -67,28 +77,42 @@ io.on('connection', (sock: Socket) => {
     const r = rooms.get(String(d?.code || '').toUpperCase());
     const i = r ? r.seats.findIndex((s) => s.token === d?.token) : -1;
     if (!r || i < 0) return ack?.({ error: 'Session expired.' });
+    if (activeRoom() && (r.code !== sock.data.code || i !== sock.data.seat)) return ack?.({ error: 'You are already seated in a room.' });
     ack?.({ ok: true }); bind(r, i);
   }));
-  sock.on('opts', guard((d) => {
-    const r = rooms.get(sock.data.code); if (!r || r.started || sock.data.seat !== r.host) return;
-    r.opts.plusMinus = !!d?.plusMinus; push(r);
+  sock.on('opts', guard((d, ack) => {
+    const r = activeRoom();
+    if (!r || r.started || sock.data.seat !== r.host) return ack?.({ error: 'Only the host can change lobby settings.' });
+    r.opts = { plusMinus: d?.plusMinus === true, format: d?.format === 'quick' ? 'quick' : 'classic' };
+    push(r); ack?.({ ok: true });
   }));
   sock.on('start', guard((_d, ack) => {
-    const r = rooms.get(sock.data.code);
-    if (!r || sock.data.seat !== r.host || r.started) return;
+    const r = activeRoom();
+    if (!r || sock.data.seat !== r.host) return ack?.({ error: 'Only the host can start the game.' });
+    if (r.started && r.state?.phase !== 'done') return ack?.({ error: 'The game has already started.' });
     if (r.seats.length < 3) return ack?.({ error: 'Need at least 3 players.' });
-    r.state = E.newGame(r.seats.length, r.opts); r.started = true; push(r);
+    if (r.seats.some((seat) => !seat.connected)) return ack?.({ error: 'Wait for everyone to reconnect before starting.' });
+    r.state = E.newGame(r.seats.length, r.opts); r.started = true; push(r); ack?.({ ok: true });
   }));
   sock.on('act', guard((d, ack) => {
-    const r = rooms.get(sock.data.code); if (!r?.state) return;
-    const err = E.act(r.state, sock.data.seat, String(d?.type), Number(d?.value));
-    ack?.({ error: err }); if (!err) push(r);
+    const r = activeRoom();
+    if (!r?.state) return ack?.({ error: 'No active game.' });
+    if (typeof d?.type !== 'string' || !Number.isInteger(d?.value)) return ack?.({ error: 'Invalid action.' });
+    const error = E.act(r.state, sock.data.seat, d.type, d.value);
+    if (!error) push(r);
+    ack?.({ error });
   }));
-  sock.on('leave', guard(() => {
-    const r = rooms.get(sock.data.code); if (!r || r.started) return;
+  sock.on('leave', guard((_d, ack) => {
+    const r = activeRoom();
+    if (!r || r.started) return ack?.({ error: 'You can leave directly from the lobby.' });
     r.seats.splice(sock.data.seat, 1); r.host = 0; sock.data = {};
-    r.seats.forEach((s) => s.sid && io.to(s.sid).emit('reindex')); // clients re-resume to get new seat index
+    r.seats.forEach((seat, i) => {
+      const connection = seat.sid ? io.sockets.sockets.get(seat.sid) : undefined;
+      if (connection) connection.data.seat = i;
+    });
     if (!r.seats.length) { rooms.delete(r.code); redis?.del('wa:room:' + r.code); }
+    else push(r);
+    ack?.({ ok: true });
   }));
   // Disconnect NEVER forfeits a seat; the player simply resumes with their own token.
   sock.on('disconnect', () => {

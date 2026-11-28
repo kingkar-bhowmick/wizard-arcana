@@ -1,178 +1,110 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-import * as E from '../shared/engine';
+import { useRef, useState } from 'react';
+import type { RefObject } from 'react';
+import { Card } from './Card';
+import { hasLocalSave, Local } from './Local';
+import type { LocalMode } from './Local';
+import { Online } from './Online';
+import { playSound, useSoundPreference } from './sound';
+import { readStorage } from './storage';
 
-const COL = ['#3b82f6', '#22c55e', '#ef4444', '#eab308'];
-const GLYPH = ['◆', '♣', '♥', '★'];
+type Page = 'home' | 'online' | LocalMode;
+type Mode = Exclude<Page, 'home'>;
+const modes: { id: Mode; icon: string; title: string; description: string; players: string }[] = [
+  { id: 'solo', icon: '✦', title: 'Solo practice', description: 'Sharpen your predictions against computer opponents.', players: '1 player' },
+  { id: 'online', icon: '◇', title: 'Online multiplayer', description: 'Create a private room and invite friends to your table.', players: '3–6 players' },
+  { id: 'pass', icon: '☾', title: 'Pass & play', description: 'Share a device and reveal each hand as turns change.', players: '3–6 players' },
+];
 
-// PLACEHOLDER ART: procedural card faces. Drop illustrated assets in /public/cards and swap here.
-function Card({ id, sel, dis, onClick, sm }: any) {
-  const k = E.kind(id), s = E.suitOf(id), v = E.val(id);
-  const c = k === 'n' ? COL[s!] : k === 'w' ? '#a855f7' : '#94a3b8';
-  const label = k === 'n' ? v : k === 'w' ? 'W' : 'J';
-  return (
-    <button className={`card ${sel ? 'sel' : ''} ${dis ? 'dis' : ''} ${sm ? 'sm' : ''}`} onClick={onClick}
-      style={{ ['--c' as any]: c }} aria-label={E.cardName(id)}>
-      <span className="cn tl">{label}</span>
-      <span className="art">{k === 'n' ? GLYPH[s!] : k === 'w' ? '✦' : '☾'}</span>
-      <span className="cn br">{label}</span>
-    </button>
-  );
+function Guide({ dialog }: { dialog: RefObject<HTMLDialogElement> }) {
+  return <dialog ref={dialog} className="guide" aria-labelledby="guide-title"
+    onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
+    <section>
+      <div className="guide-title"><h2 id="guide-title">How to play</h2>
+        <form method="dialog"><button type="submit" aria-label="Close guide">×</button></form></div>
+      <p className="muted">A trick is one card from each player. Your goal is to win exactly the number of tricks you bid.</p>
+      <ol className="guide-steps">
+        <li><div><strong>Check trump</strong><p>The turned-up card sets trump. A Wizard lets the dealer choose. A Jester or an exhausted deck means no trump.</p></div></li>
+        <li><div><strong>Make a prediction</strong><p>Round one deals one card per player, round two deals two, and so on. Bid between zero and the number of cards in your hand.</p></div></li>
+        <li><div><strong>Play one card per trick</strong><p>Follow the first numbered suit led if you can. Wizards and Jesters can always be played. A Wizard played before any numbered card leaves the suit open.</p></div></li>
+        <li><div><strong>Decide the winner</strong><p>The first Wizard wins, then the highest trump, then the highest card of the led suit. If everyone plays a Jester, the first Jester wins.</p></div></li>
+      </ol>
+      <div className="guide-cards"><Card id={11} compact /><Card id={52} compact /><Card id={56} compact /></div>
+      <h3>Scoring</h3>
+      <p>Hit your bid for 20 points plus 10 per trick you won. Miss it and lose 10 points per trick off. A bid of two with two wins earns 40 points. A bid of two with one win loses 10.</p>
+      <h3>Match formats</h3>
+      <p>Classic plays until a full-deck round. Quick plays six rounds. With plus/minus bidding enabled, the final bidder cannot make the sum of all bids equal the tricks available.</p>
+    </section>
+  </dialog>;
 }
 
-function Game({ v, names, act, err }: { v: any; names: string[]; act: (t: string, x: number) => void; err?: string }) {
-  const [sel, setSel] = useState<number | null>(null);
-  const [bid, setBid] = useState<number | null>(null);
-  const [msg, setMsg] = useState('');
-  useEffect(() => { setSel(null); setBid(null); setMsg(''); }, [v.turn, v.phase, v.trickNo, v.round]);
-  const mine = v.turn === v.me;
-
-  if (v.phase === 'done') {
-    const top = Math.max(...v.scores);
-    return (
-      <div className="panel">
-        <h2>Final Standings</h2>
-        {v.scores.map((s: number, i: number) => ({ s, i })).sort((a: any, b: any) => b.s - a.s).map(({ s, i }: any) => (
-          <div key={i} className={`row ${s === top ? 'win' : ''}`}>{s === top ? '👑 ' : ''}{names[i]}<b>{s}</b></div>
-        ))}
-        <h3>History</h3>
-        <div className="hist">{v.history.map((h: any) => (
-          <div key={h.round} className="hrow"><b>R{h.round}</b> {h.bids.map((b: number, i: number) => `${names[i][0]}:${b}/${h.won[i]} (${h.pts[i]})`).join('  ')}</div>
-        ))}</div>
+function Home({ navigate, openGuide }: { navigate: (page: Page) => void; openGuide: () => void }) {
+  return <>
+    <section className="hero" aria-labelledby="home-title">
+      <div className="hero-scene" aria-hidden="true">
+        <div className="hero-card far"><Card id={38} /></div>
+        <div className="hero-card jester"><Card id={56} /></div>
+        <div className="hero-card wizard"><Card id={52} /></div>
       </div>
-    );
-  }
-  const done = v.bids.filter((b: any) => b !== null);
-  const forbidden = v.opts.plusMinus && done.length === v.n - 1 ? v.round - done.reduce((a: number, b: number) => a + b, 0) : -1;
-  const shown = v.plays.length ? v.plays : v.lastTrick?.plays || [];
-  const status = v.phase === 'trump' ? `${names[v.turn]} chooses trump` : v.phase === 'bid' ? `${names[v.turn]} is predicting` : `${names[v.turn]} to play`;
-
-  const tap = (c: number) => {
-    if (v.phase !== 'play' || !mine) return;
-    const e = E.playError(v.hand, v.plays, c);
-    if (e) return setMsg(e);
-    if (sel === c) act('play', c); else setSel(c);
-  };
-  return (
-    <div className="table">
-      <div className="top">
-        <span>Round {v.round}/{v.rounds} · Trick {Math.min(v.trickNo + 1, v.round)}</span>
-        <span className="trump">Trump: {v.trump === null ? 'None' : E.SUITS[v.trump]}{v.trumpCard !== null && <Card id={v.trumpCard} sm />}</span>
+      <div className="hero-content">
+        <p className="eyebrow"><span aria-hidden="true">✦</span> A game of tricks and predictions</p>
+        <h1 id="home-title">Wizard<br /><em>Arcana</em></h1>
+        <p>Read your hand, call your tricks, and outplay the table.</p>
+        <div className="hero-actions">
+          <button className="primary" onClick={() => navigate('solo')}>{hasLocalSave('solo') ? 'Resume solo game' : 'Play solo'} <span aria-hidden="true">↗</span></button>
+          <button className="subtle" onClick={openGuide}>Learn the rules</button>
+        </div>
       </div>
-      <div className="players">{names.map((n, i) => (
-        <div key={i} className={`pl ${v.turn === i ? 'act' : ''} ${v.me === i ? 'me' : ''}`}>
-          <b>{n}{v.dealer === i ? ' (D)' : ''}</b>
-          <span>Bid {v.bids[i] ?? '–'} · Won {v.won[i]}</span><span>{v.scores[i]} pts</span>
-        </div>))}
-      </div>
-      <div className="center">
-        {shown.map((x: any) => <div key={x.p} className={`pc ${v.lastTrick && !v.plays.length && v.lastTrick.winner === x.p ? 'winner' : ''}`}><small>{names[x.p]}</small><Card id={x.c} sm /></div>)}
-        {!shown.length && <i>Table is empty</i>}
-      </div>
-      <div className="status">{status}{mine ? ' — that is you!' : ''}</div>
-      {(msg || err) && <div className="err">{msg || err}</div>}
-      {mine && v.phase === 'trump' && <div className="bids">{E.SUITS.map((s, i) => <button key={i} style={{ background: COL[i] }} onClick={() => act('trump', i)}>{s}</button>)}</div>}
-      {mine && v.phase === 'bid' && (<>
-        <div className="bids">{Array.from({ length: v.round + 1 }, (_, b) => (
-          <button key={b} className={bid === b ? 'on' : ''} disabled={b === forbidden} onClick={() => setBid(b)}>{b}</button>))}</div>
-        <button className="gold" disabled={bid === null} onClick={() => act('bid', bid!)}>Confirm prediction{bid !== null ? `: ${bid}` : ''}</button>
-      </>)}
-      <div className="hand">{v.hand.map((c: number) => (
-        <Card key={c} id={c} sel={sel === c} dis={v.phase === 'play' && mine && !!E.playError(v.hand, v.plays, c)} onClick={() => tap(c)} />))}</div>
-      {mine && v.phase === 'play' && <button className="gold" disabled={sel === null} onClick={() => sel !== null && act('play', sel)}>Play card</button>}
-    </div>
-  );
-}
-
-const sget = (k: string) => { try { return sessionStorage.getItem(k); } catch { return null; } };
-const sset = (k: string, v: string | null) => { try { v === null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch {} };
-
-function Online({ back }: { back: () => void }) {
-  const sock = useRef<Socket>();
-  const [room, setRoom] = useState<any>(null);
-  const [up, setUp] = useState(true);
-  const [name, setName] = useState(localStorage.getItem('wa:name') || '');
-  const [code, setCode] = useState(new URLSearchParams(location.search).get('room') || '');
-  const [err, setErr] = useState('');
-  useEffect(() => {
-    const s = io(); sock.current = s;
-    const resume = () => { // each TAB keeps its own identity in sessionStorage -> tabs never replace each other
-      const c = sget('wa:code'), t = sget('wa:token');
-      if (c && t) s.emit('resume', { code: c, token: t }, (r: any) => { if (r?.error) { sset('wa:code', null); sset('wa:token', null); setRoom(null); } });
-    };
-    s.on('connect', () => { setUp(true); resume(); });
-    s.on('disconnect', () => setUp(false));
-    s.on('room', setRoom); s.on('reindex', resume);
-    s.on('replaced', () => { setErr('Opened elsewhere.'); s.close(); });
-    return () => { s.close(); };
-  }, []);
-  const enter = (ev: 'create' | 'join') => {
-    localStorage.setItem('wa:name', name);
-    sock.current!.emit(ev, { name, code }, (r: any) => { if (r.error) return setErr(r.error); sset('wa:code', r.code); sset('wa:token', r.token); });
-  };
-  const act = (type: string, value: number) => sock.current!.emit('act', { type, value }, (r: any) => setErr(r?.error || ''));
-  const banner = !up && <div className="err">Reconnecting… your seat is safe.</div>;
-  if (!room) return (
-    <div className="panel">{banner}<h2>Online</h2>
-      <input placeholder="Your name" value={name} maxLength={16} onChange={(e) => setName(e.target.value)} />
-      <button className="gold" onClick={() => enter('create')}>Create room</button>
-      <input placeholder="Room code" value={code} maxLength={6} onChange={(e) => setCode(e.target.value.toUpperCase())} />
-      <button onClick={() => enter('join')}>Join room</button>{err && <div className="err">{err}</div>}
-      <button className="link" onClick={back}>Back</button></div>);
-  const names = room.seats.map((s: any) => s.name);
-  if (room.game) return <>{banner}<Game v={room.game} names={names} act={act} err={err} /></>;
-  const link = `${location.origin}/?room=${room.code}`;
-  return (
-    <div className="panel">{banner}<h2>Room <span className="code">{room.code}</span></h2>
-      <button onClick={() => navigator.share ? navigator.share({ url: link }) : navigator.clipboard.writeText(link)}>Share invite link</button>
-      {room.seats.map((s: any, i: number) => <div key={i} className="row">{s.name}{i === room.host ? ' ★host' : ''}<b>{s.connected ? 'online' : 'offline'}</b></div>)}
-      {room.me === room.host && <>
-        <label><input type="checkbox" checked={room.opts.plusMinus} onChange={(e) => sock.current!.emit('opts', { plusMinus: e.target.checked })} /> Plus/minus one variant</label>
-        <button className="gold" disabled={room.seats.length < 3} onClick={() => sock.current!.emit('start', {}, (r: any) => setErr(r?.error || ''))}>Start game</button></>}
-      {err && <div className="err">{err}</div>}
-    </div>);
-}
-
-function Offline({ back }: { back: () => void }) {
-  const saved = (() => { try { return JSON.parse(localStorage.getItem('wa:off') || 'null'); } catch { return null; } })();
-  const [g, setG] = useState<{ s: E.State; names: string[] } | null>(saved);
-  const [names, setNames] = useState(['', '', '']);
-  const [plusMinus, setPM] = useState(false);
-  const [shown, setShown] = useState(false);
-  const [err, setErr] = useState('');
-  useEffect(() => { if (g) localStorage.setItem('wa:off', JSON.stringify(g)); }, [g]);
-  if (!g) return (
-    <div className="panel"><h2>Pass &amp; Play</h2>
-      <div className="bids">{[3, 4, 5, 6].map((n) => <button key={n} className={names.length === n ? 'on' : ''} onClick={() => setNames(Array.from({ length: n }, (_, i) => names[i] || ''))}>{n}</button>)}</div>
-      {names.map((n, i) => <input key={i} placeholder={`Player ${i + 1}`} value={n} maxLength={16} onChange={(e) => setNames(names.map((x, j) => (j === i ? e.target.value : x)))} />)}
-      <label><input type="checkbox" checked={plusMinus} onChange={(e) => setPM(e.target.checked)} /> Plus/minus one variant</label>
-      <button className="gold" onClick={() => setG({ s: E.newGame(names.length, { plusMinus }), names: names.map((n, i) => n.trim() || `Player ${i + 1}`) })}>Start</button>
-      <button className="link" onClick={back}>Back</button></div>);
-  const { s, names: nm } = g;
-  if (s.phase === 'done') return <><Game v={E.view(s, 0)} names={nm} act={() => {}} /><button onClick={() => { localStorage.removeItem('wa:off'); setG(null); }}>New game</button></>;
-  if (!shown) return (
-    <div className="panel handoff"><h2>Pass the device to</h2><div className="code">{nm[s.turn]}</div>
-      <button className="gold" onClick={() => setShown(true)}>I am {nm[s.turn]} — show my cards</button>
-      <button className="link" onClick={() => { localStorage.removeItem('wa:off'); setG(null); }}>Abandon game</button></div>);
-  const act = (t: string, x: number) => {
-    const c = structuredClone(s); const e = E.act(c, s.turn, t, x);
-    if (e) return setErr(e); setErr(''); setG({ s: c, names: nm }); setShown(false);
-  };
-  return <Game v={E.view(s, s.turn)} names={nm} act={act} err={err} />;
+    </section>
+    <section className="mode-section" aria-labelledby="modes-title">
+      <h2 id="modes-title">Choose a mode</h2>
+      <div className="mode-grid">{modes.map((mode) => {
+        const resume = mode.id === 'online' ? !!readStorage('session', 'wa:code') : hasLocalSave(mode.id);
+        return <button key={mode.id} className={`mode-tile ${mode.id}`} onClick={() => navigate(mode.id)}>
+          <span className="mode-top"><span className="mode-icon" aria-hidden="true">{mode.icon}</span><small>{mode.players}</small></span>
+          <strong>{mode.title}</strong>
+          <span className="mode-description">{mode.description}</span>
+          <span className="mode-link">{resume ? 'Resume game' : mode.id === 'online' ? 'Find your table' : 'Set up a game'} <span aria-hidden="true">↗</span></span>
+        </button>;
+      })}</div>
+    </section>
+  </>;
 }
 
 export default function App() {
-  const [mode, setMode] = useState<'home' | 'online' | 'offline'>(sget('wa:code') || new URLSearchParams(location.search).get('room') ? 'online' : localStorage.getItem('wa:off') ? 'offline' : 'home');
-  return (
-    <div className="app">
-      <h1>Wizard Arcana</h1>
-      {mode === 'home' && <div className="panel">
-        <button className="gold" onClick={() => setMode('online')}>Online multiplayer</button>
-        <button onClick={() => setMode('offline')}>Offline pass &amp; play</button>
-        <details><summary>How to play</summary>
-          <p>Predict how many tricks you'll win, then play. Follow the led colour if you can. Wizards and Jesters can always be played. First Wizard wins; otherwise highest trump; otherwise highest of the led colour. Exact prediction: 20 + 10 per trick. Miss: −10 per trick off.</p></details>
-      </div>}
-      {mode === 'online' && <Online back={() => setMode('home')} />}
-      {mode === 'offline' && <Offline back={() => setMode('home')} />}
-    </div>);
+  const [page, setPage] = useState<Page>(() => readStorage('session', 'wa:code') || new URLSearchParams(location.search).get('room') ? 'online' : 'home');
+  const { sound, toggle } = useSoundPreference();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const content = useRef<HTMLElement>(null);
+  function navigate(next: Page) {
+    if (page === next) return;
+    playSound('tap');
+    setPage(next);
+    window.scrollTo(0, 0);
+    content.current?.focus({ preventScroll: true });
+  }
+  const openGuide = () => dialog.current?.showModal();
+  return <div className="app">
+    <a className="skip-link" href="#content">Skip to content</a>
+    <header className="site-header">
+      <div className="shell header-inner">
+        <button className="brand" onClick={() => navigate('home')} aria-label="Wizard Arcana home">
+          <span className="brand-icon" aria-hidden="true">✦</span><span>Wizard <em>Arcana</em></span>
+        </button>
+        <div className="header-actions">
+          <button className="plain rules-link" onClick={openGuide}><span aria-hidden="true">ⓘ</span> Rules</button>
+          <button className="sound-control" aria-pressed={sound} aria-label={sound ? 'Mute sound' : 'Enable sound'} onClick={toggle}>
+            <span aria-hidden="true">♫</span> <span>Sound {sound ? 'on' : 'off'}</span>
+          </button>
+        </div>
+      </div>
+    </header>
+    <main className="shell main" id="content" ref={content} tabIndex={-1}>
+      {page !== 'home' && <button className="plain back" onClick={() => navigate('home')}><span aria-hidden="true">←</span> Back to home</button>}
+      {page === 'home' && <Home navigate={navigate} openGuide={openGuide} />}
+      {page === 'online' && <Online back={() => navigate('home')} />}
+      {(page === 'solo' || page === 'pass') && <Local key={page} mode={page} home={() => navigate('home')} />}
+    </main>
+    <footer className="shell footer"><span>Wizard Arcana</span><button className="plain" onClick={openGuide}>How to play</button></footer>
+    <Guide dialog={dialog} />
+  </div>;
 }

@@ -23,19 +23,22 @@ export const shuffle = (r: Rng = rng) => {
 };
 
 export interface Play { p: number; c: number }
-export interface Opts { plusMinus: boolean }
+export type Format = 'classic' | 'quick';
+export const QUICK_ROUNDS = 6;
+export interface Opts { plusMinus: boolean; format?: Format }
+export type ActionType = 'trump' | 'bid' | 'play';
 export interface State {
   n: number; rounds: number; round: number; dealer: number;
   phase: 'trump' | 'bid' | 'play' | 'done';
   hands: number[][]; trumpCard: number | null; trump: Suit | null;
   bids: (number | null)[]; won: number[]; plays: Play[]; turn: number; trickNo: number;
   scores: number[]; history: { round: number; bids: number[]; won: number[]; pts: number[] }[];
-  opts: Opts; lastTrick: { plays: Play[]; winner: number } | null;
+  opts: Opts; lastTrick: { plays: Play[]; winner: number; round?: number } | null;
 }
 
 export function newGame(n: number, opts: Opts = { plusMinus: false }, r: Rng = rng): State {
-  if (n < 3 || n > 6) throw new Error('3-6 players');
-  const s: State = { n, rounds: 60 / n, round: 1, dealer: r(n), phase: 'bid', hands: [], trumpCard: null, trump: null,
+  if (!Number.isInteger(n) || n < 3 || n > 6) throw new Error('3-6 players');
+  const s: State = { n, rounds: opts.format === 'quick' ? QUICK_ROUNDS : 60 / n, round: 1, dealer: r(n), phase: 'bid', hands: [], trumpCard: null, trump: null,
     bids: [], won: [], plays: [], turn: 0, trickNo: 0, scores: Array(n).fill(0), history: [], opts, lastTrick: null };
   deal(s, r);
   return s;
@@ -49,7 +52,7 @@ function deal(s: State, r: Rng) {
     const t = d[s.round * s.n]; s.trumpCard = t;
     if (kind(t) === 'n') s.trump = suitOf(t);
     else if (kind(t) === 'w') { s.phase = 'trump'; s.turn = s.dealer; } // dealer chooses
-  } // last round: no trump; Jester: no trump
+  } // When the deck is exhausted, or a Jester is turned up, there is no trump.
 }
 export function leadSuit(plays: Play[]): Suit | null {
   for (const x of plays) { if (kind(x.c) === 'w') return null; if (kind(x.c) === 'n') return suitOf(x.c); }
@@ -71,6 +74,11 @@ export function trickWinner(plays: Play[], trump: Suit | null): number {
 }
 export const roundPoints = (bid: number, won: number) => (bid === won ? 20 + 10 * won : -10 * Math.abs(bid - won));
 
+export function forbiddenBid({ opts, round, bids }: Pick<State, 'opts' | 'round' | 'bids'>) {
+  if (!opts.plusMinus || bids.filter((bid) => bid === null).length !== 1) return null;
+  return round - bids.reduce<number>((sum, bid) => sum + (bid ?? 0), 0);
+}
+
 export function act(s: State, p: number, type: string, value: number, r: Rng = rng): string | null {
   if (s.phase === 'done') return 'Game over.';
   if (s.turn !== p) return 'Not your turn.';
@@ -81,8 +89,7 @@ export function act(s: State, p: number, type: string, value: number, r: Rng = r
   if (type === 'bid') {
     if (s.phase !== 'bid') return 'Not bidding.';
     if (!Number.isInteger(value) || value < 0 || value > s.round) return 'Invalid bid.';
-    const done = s.bids.filter((b) => b !== null) as number[];
-    if (s.opts.plusMinus && done.length === s.n - 1 && done.reduce((a, b) => a + b, 0) + value === s.round)
+    if (value === forbiddenBid(s))
       return `Total bids may not equal ${s.round}.`;
     s.bids[p] = value; s.turn = (p + 1) % s.n;
     if (s.bids.every((b) => b !== null)) { s.phase = 'play'; s.turn = (s.dealer + 1) % s.n; }
@@ -95,7 +102,7 @@ export function act(s: State, p: number, type: string, value: number, r: Rng = r
     s.hands[p] = s.hands[p].filter((c) => c !== value); s.plays.push({ p, c: value });
     if (s.plays.length < s.n) { s.turn = (p + 1) % s.n; return null; }
     const w = trickWinner(s.plays, s.trump);
-    s.won[w]++; s.lastTrick = { plays: s.plays, winner: w }; s.plays = []; s.trickNo++; s.turn = w;
+    s.won[w]++; s.lastTrick = { plays: s.plays, winner: w, round: s.round }; s.plays = []; s.trickNo++; s.turn = w;
     if (s.trickNo === s.round) endRound(s, r);
     return null;
   }
@@ -113,3 +120,4 @@ export function view(s: State, me: number) {
   const { hands, ...rest } = s;
   return { ...rest, hand: hands[me], counts: hands.map((h) => h.length), me };
 }
+export type GameView = ReturnType<typeof view>;

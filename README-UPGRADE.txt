@@ -1,26 +1,21 @@
-WIZARD ARCANA v3 — UPDATE YOUR EXISTING GITHUB REPOSITORY
-==========================================================
+Wizard Arcana
+=============
 
-Your GitHub repository already uses: wizard-arcana/ (subfolder)
+The application lives in the wizard-arcana directory.
 
-1. Upload wizard-arcana-v3.zip to repository ROOT in GitHub.
-2. Open GitHub Codespaces, from the repository root terminal run:
+Run locally from the repository root:
 
-   unzip -o wizard-arcana-v3.zip
-   git add -A
-   git commit -m "Upgrade Wizard Arcana to v3"
-   git push origin main
+  cd wizard-arcana
+  npm ci
+  npm run build
+  npm start
 
-3. In Render use Root Directory: wizard-arcana  (NO leading slash)
-   Build Command: npm install
-   Start Command: npm start
+Open http://localhost:3000.
 
-4. Existing Render web service should redeploy automatically if auto-deploy is on.
+On Render, use wizard-arcana as the root directory, npm ci && npm run build
+as the build command, npm start as the start command, and /health as the
+health check. The root render.yaml includes these settings.
 
-IMPORTANT: unzip -o means overwrite the old version inside wizard-arcana/.
-Do NOT unzip from inside the wizard-arcana/ folder, or you will make a nested folder.
-
-See wizard-arcana/README.md for full details, offline and reconnection behavior.
-
-This is a personal fan-made adaptation. It includes card art from a user-supplied photo.
-Public redistribution of the original artwork may require permission from rights owners.
+See wizard-arcana/README.md for the full VS Code setup guide, dependency
+installation, live development commands, Render deployment, and troubleshooting.
+See wizard-arcana/docs/how-to-play.md for rules, scoring, and modes.
